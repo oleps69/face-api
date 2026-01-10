@@ -1,5 +1,6 @@
 # =========================================
 # PROFESYONEL YÜZ TANIMA API (RAILWAY)
+# ROOT DOSYA YAPISI UYUMLU
 # =========================================
 
 import os
@@ -11,22 +12,24 @@ from sklearn.metrics.pairwise import cosine_similarity
 from insightface.app import FaceAnalysis
 
 # =======================
-# PATH AYARLARI
+# BASE PATH
 # =======================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model")
 
-EMB_PATH = os.path.join(MODEL_PATH, "embeddings.npy")
-LBL_PATH = os.path.join(MODEL_PATH, "labels.npy")
-THR_PATH = os.path.join(MODEL_PATH, "threshold.txt")
+# =======================
+# DOSYA YOLLARI (ROOT)
+# =======================
+EMB_PATH = os.path.join(BASE_DIR, "embeddings.npy")
+LBL_PATH = os.path.join(BASE_DIR, "labels.npy")
+THR_PATH = os.path.join(BASE_DIR, "threshold.txt")
 
 # =======================
 # KİŞİ İSİMLERİ
 # =======================
-PERSONS = ["Oh", "Oh1"]  # SIRASI labels.npy ile UYUMLU OLMALI
+PERSONS = ["Oh", "Oh1"]  # labels.npy ile SIRASI UYUMLU OLMALI
 
 # =======================
-# MODEL YÜKLE
+# INSIGHTFACE MODEL
 # =======================
 app_face = FaceAnalysis(
     name="buffalo_l",
@@ -44,20 +47,20 @@ with open(THR_PATH, "r") as f:
     AUTO_THRESHOLD = float(f.read())
 
 # =======================
-# FASTAPI
+# FASTAPI APP
 # =======================
 api = FastAPI(title="Face Recognition API")
 
 # =======================
-# YARDIMCI
+# IMAGE DECODE
 # =======================
-def read_image_from_bytes(bytes_data):
-    np_img = np.frombuffer(bytes_data, np.uint8)
+def read_image_from_bytes(image_bytes):
+    np_img = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
     return img
 
 # =======================
-# ENDPOINT
+# IDENTIFY ENDPOINT
 # =======================
 @api.post("/identify")
 async def identify_face(file: UploadFile = File(...)):
@@ -66,7 +69,9 @@ async def identify_face(file: UploadFile = File(...)):
         img = read_image_from_bytes(contents)
 
         if img is None:
-            return {"error": "Görüntü okunamadı"}
+            return {
+                "error": "Görüntü okunamadı"
+            }
 
         faces = app_face.get(img)
 
@@ -100,7 +105,7 @@ async def identify_face(file: UploadFile = File(...)):
         }
 
 # =======================
-# SAĞLIK KONTROLÜ
+# HEALTH CHECK
 # =======================
 @api.get("/")
 def root():
@@ -108,4 +113,4 @@ def root():
         "status": "OK",
         "threshold": AUTO_THRESHOLD,
         "persons": PERSONS
-}
+    }
