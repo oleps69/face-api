@@ -1,107 +1,93 @@
-import os
 import cv2
 import numpy as np
-import logging
-
+import pickle
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-
 from insightface.app import FaceAnalysis
-from sklearn.metrics.pairwise import cosine_similarity
 
-# =====================
-# LOG SUSTUR
-# =====================
-logging.getLogger("insightface").setLevel(logging.ERROR)
-logging.getLogger("onnxruntime").setLevel(logging.ERROR)
+# =========================
+# CONFIG
+# =========================
+EMBEDDING_FILE = "face_embeddings.pkl"
+THRESHOLD = 0.60
+IMAGE_SIZE = (640, 640)
 
-# =====================
-# FASTAPI
-# =====================
-api = FastAPI(title="Face Recognition API")
+# =========================
+# LOAD EMBEDDINGS
+# =========================
+with open(EMBEDDING_FILE, "rb") as f:
+    EMBEDDING_DB = pickle.load(f)
 
-# =====================
-# PATHS
-# =====================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-EMB_PATH = os.path.join(BASE_DIR, "embeddings.npy")
-LBL_PATH = os.path.join(BASE_DIR, "labels.npy")
-THR_PATH = os.path.join(BASE_DIR, "threshold.txt")
-
-# =====================
-# LOAD FILES (SAFE)
-# =====================
-if not os.path.exists(EMB_PATH):
-    raise RuntimeError("embeddings.npy bulunamadı")
-
-if not os.path.exists(LBL_PATH):
-    raise RuntimeError("labels.npy bulunamadı")
-
-if not os.path.exists(THR_PATH):
-    raise RuntimeError("threshold.txt bulunamadı")
-
-embeddings = np.load(EMB_PATH)
-labels = np.load(LBL_PATH)
-
-with open(THR_PATH, "r") as f:
-    AUTO_THRESHOLD = float(f.read().strip())
-
-PERSONS = ["Oh", "Oh1"]
-
-# =====================
+# =========================
 # LOAD MODEL
-# =====================
-face_app = FaceAnalysis(
+# =========================
+app_face = FaceAnalysis(
     name="buffalo_l",
     providers=["CPUExecutionProvider"]
 )
-face_app.prepare(ctx_id=-1, det_size=(640, 640))
+app_face.prepare(ctx_id=0, det_size=IMAGE_SIZE)
 
-# =====================
-# HEALTH CHECK
-# =====================
-@api.get("/")
-def root():
-    return {
-        "status": "OK",
-        "persons": PERSONS,
-        "threshold": AUTO_THRESHOLD
-    }
+# =========================
+# FASTAPI
+# =========================
+app = FastAPI(title="Face Recognition API")
 
-# =====================
-# IDENTIFY
-# =====================
-@api.post("/identify")
-async def identify_face(file: UploadFile = File(...)):
-    img_bytes = await file.read()
-    np_img = np.frombuffer(img_bytes, np.uint8)
+# =========================
+# UTILS
+# =========================
+def extract_embedding(img):
+    faces = app_face.get(img)
+    if len(faces) == 0:
+        return None
+
+    face = max(faces, key=lambda f: f.bbox[2] * f.bbox[3])
+    emb = face.embedding.astype(np.float32)
+    return emb / np.linalg.norm(emb)
+
+def cosine_similarity(a, b):
+    return float(np.dot(a, b))
+
+def predict_identity(emb):
+    best_person = None
+    best_score = -1
+
+    for person, ref_emb in EMBEDDING_DB.items():
+        score = cosine_similarity(emb, ref_emb)
+        if score > best_score:
+            best_score = score
+            best_person = person
+
+    confidence = (best_score + 1) / 2
+    return best_person, confidence
+
+# =========================
+# ROUTES
+# =========================
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    contents = await file.read()
+    np_img = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
     if img is None:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Görüntü okunamadı"}
-        )
+        return {"error": "Invalid image"}
 
-    faces = face_app.get(img)
+    emb = extract_embedding(img)
+    if emb is None:
+        return {"person": "unknown", "confidence": 0.0}
 
-    if len(faces) != 1:
-        return {"result": "Hata: Tek yüz olmalı"}
+    person, confidence = predict_identity(emb)
 
-    emb = faces[0].embedding.reshape(1, -1)
-    sims = cosine_similarity(emb, embeddings)[0]
-
-    best_idx = int(np.argmax(sims))
-    best_score = float(sims[best_idx])
-
-    if best_score < AUTO_THRESHOLD:
+    if confidence < THRESHOLD:
         return {
-            "result": "Bilinmeyen ❌",
-            "score": round(best_score, 3)
+            "person": "unknown",
+            "confidence": round(confidence, 3)
         }
 
     return {
-        "result": PERSONS[labels[best_idx]],
-        "score": round(best_score, 3)
+        "person": person,
+        "confidence": round(confidence, 3)
     }
+
+@app.get("/")
+def health():
+    return {"status": "ok", "persons": len(EMBEDDING_DB)}
